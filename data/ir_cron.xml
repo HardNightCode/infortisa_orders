@@ -1,0 +1,18 @@
+<odoo>
+  <data>
+    <record id="ir_cron_infortisa_poll_status" model="ir.cron">
+      <field name="name">Infortisa: Actualizar estado pedidos</field>
+      <field name="active">True</field>
+      <field name="interval_number">1</field>
+      <field name="interval_type">minutes</field>
+      <field name="numbercall">-1</field>
+      <field name="doall">False</field>
+      <field name="user_id" ref="base.user_admin"/>
+      <field name="model_id" ref="sale.model_sale_order"/>
+      <field name="state">code</field>
+      <field name="code">model.with_context(infortisa_from_cron=True).cron_infortisa_poll_status()</field>
+      <field name="nextcall" eval="(DateTime.now()).strftime('%Y-%m-%d %H:%M:%S')"/>
+    </record>
+  </data>
+</odoo>
+ 

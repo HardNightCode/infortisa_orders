@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_infortisa_raw_wizard,access.infortisa.raw.wizard,model_infortisa_raw_wizard,base.group_user,1,0,1,0
+

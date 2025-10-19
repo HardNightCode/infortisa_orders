@@ -1,0 +1,138 @@
+<odoo>
+  <!-- Ajustes de Infortisa: inserción robusta en el <form> de res.config.settings -->
+  <record id="res_config_settings_view_form_infortisa" model="ir.ui.view">
+    <field name="name">res.config.settings.infortisa.form</field>
+    <field name="model">res.config.settings</field>
+    <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+    <field name="arch" type="xml">
+
+      <!-- Colgamos nuestro bloque dentro del <form> (al final del contenido existente) -->
+      <xpath expr="//form" position="inside">
+        <div class="app_settings_block" data-string="Infortisa" string="Infortisa">
+          <h2>Infortisa</h2>
+
+          <div class="row mt16 o_settings_container">
+            <div class="col-12 col-lg-6">
+
+              <!-- API Key -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_api_key" password="True"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_api_key"/>
+                  <div class="text-muted">
+                    API Key de Infortisa (Authorization-Token).
+                  </div>
+                </div>
+              </div>
+
+              <!-- Modo TEST -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_test_mode"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_test_mode"/>
+                  <div class="text-muted">
+                    Si está activo, valida sin crear pedido real (&lt;Test&gt;true&lt;/Test&gt;).
+                  </div>
+                </div>
+              </div>
+
+              <!-- Pedido bloqueado por defecto -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_default_block"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_default_block"/>
+                  <div class="text-muted">
+                    Crear pedidos bloqueados por defecto (recomendado para pruebas).
+                  </div>
+                </div>
+              </div>
+
+              <h3 class="mt24">Configuración de facturación proveedor</h3>
+
+              <!-- Proveedor Infortisa -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_vendor_id" options="{'no_create_edit': false}"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_vendor_id"/>
+                  <div class="text-muted">Proveedor Infortisa (contacto proveedor en Odoo).</div>
+                </div>
+              </div>
+
+              <!-- Producto de compra (coste) -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_product_purchase_id" options="{'no_create_edit': false}"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_product_purchase_id"/>
+                  <div class="text-muted">Producto de compra para la línea del artículo (coste).</div>
+                </div>
+              </div>
+
+              <!-- Producto portes -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_product_shipping_id" options="{'no_create_edit': false}"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_product_shipping_id"/>
+                  <div class="text-muted">Producto de compra para gastos de envío (portes).</div>
+                </div>
+              </div>
+
+              <!-- Diario de compras (opcional) -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_journal_id" options="{'no_create_edit': false}"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_journal_id"/>
+                  <div class="text-muted">Diario contable para facturas de proveedor (opcional).</div>
+                </div>
+              </div>
+
+              <h3 class="mt24">Pagos automáticos</h3>
+
+              <!-- Diario de banco para pagos a proveedor -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_bank_journal_payment_id" options="{'no_create_edit': false}"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_bank_journal_payment_id"/>
+                  <div class="text-muted">
+                    Diario de banco para crear el pago al proveedor (p. ej. “Banco”, código corto BNK5).
+                  </div>
+                </div>
+              </div>
+
+              <!-- Auto-crear factura cuando haya referencia transferencia -->
+              <div class="o_setting_box">
+                <div class="o_setting_left">
+                  <field name="infortisa_auto_create_bill"/>
+                </div>
+                <div class="o_setting_right">
+                  <label for="infortisa_auto_create_bill"/>
+                  <div class="text-muted">
+                    Si está activo, al recibir la referencia de transferencia desde la API se creará la factura de proveedor automáticamente.
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </xpath>
+
+    </field>
+  </record>
+</odoo>
+ 

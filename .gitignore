@@ -1,0 +1,23 @@
+*.pyc
+__pycache__/
+*.log
+*.swp
+.idea/
+.vscode/
+.DS_Store
+*.egg-info/
+.eggs/
+.env
+venv/
+build/
+dist/
+*.cover
+coverage.xml
+pytest_cache/
+# Odoo
+*.zip
+*.pot
+*.po~
+*.mo
+# Jenkins workspace cache (por si alguna vez clonas ahí)
+.odoo_dev/

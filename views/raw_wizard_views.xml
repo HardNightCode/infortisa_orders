@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- Acción y vista del wizard -->
+  <record id="view_infortisa_raw_wizard_form" model="ir.ui.view">
+    <field name="name">infortisa.raw.wizard.form</field>
+    <field name="model">infortisa.raw.wizard</field>
+    <field name="arch" type="xml">
+      <form string="Ver XML crudo Infortisa">
+        <group>
+          <group>
+            <field name="payload" readonly="1" widget="text" nolabel="1" colspan="4" />
+          </group>
+          <group>
+            <field name="response" readonly="1" widget="text" nolabel="1" colspan="4" />
+          </group>
+        </group>
+        <footer>
+          <button string="Cerrar" class="btn-primary" special="cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_infortisa_raw_wizard" model="ir.actions.act_window">
+    <field name="name">Ver XML crudo Infortisa</field>
+    <field name="res_model">infortisa.raw.wizard</field>
+    <field name="view_mode">form</field>
+    <field name="target">new</field>
+  </record>
+
+</odoo>

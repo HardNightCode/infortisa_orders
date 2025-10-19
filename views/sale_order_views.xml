@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- Server Action para invocar el metodo Python sin que la vista falle si aÃƒÂºn no estÃƒÂ¡ registrado -->
+  <record id="action_infortisa_send_server" model="ir.actions.server">
+    <field name="name">Enviar a Infortisa</field>
+    <field name="model_id" ref="sale.model_sale_order"/>
+    <field name="state">code</field>
+    <field name="code">records.action_infortisa_send()</field>
+  </record>
+
+  <record id="view_order_form_infortisa" model="ir.ui.view">
+    <field name="name">sale.order.infortisa.form</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_form"/>
+    <field name="priority" eval="32"/>
+    <field name="arch" type="xml">
+
+      <!-- Boton manual (usar server action) -->
+      <xpath expr="//form/header" position="inside">
+        <button name="%(infortisa_orders.action_infortisa_send_server)d"
+                type="action"
+                string="Enviar a Infortisa"
+                class="btn-primary"
+                modifiers="{'invisible':[('infortisa_allowed','=',False)]}"/>
+        </xpath>
+
+      <!-- Pestana Infortisa -->
+      <xpath expr="//notebook" position="inside">
+        <page name="infortisa_tab" string="Infortisa"
+            modifiers="{'invisible':[('infortisa_allowed','=',False)]}">
+
+          <!-- Acciones rapidas / referencias -->
+          <group>
+            <group>
+              <field name="infortisa_customer_ref" readonly="1"/>
+              <field name="infortisa_internal_ref" readonly="1"/>
+              <field name="infortisa_op_code" readonly="1" string="Codigo operacion (Infortisa)"/>
+              <field name="infortisa_state" readonly="1"/>
+              <field name="infortisa_sent" readonly="1"/>
+              <field name="infortisa_transfer_ref" readonly="1"/>
+              <field name="infortisa_vendor_payment_id" readonly="1"/>
+              <field name="infortisa_payment_state" readonly="1"/>
+              <field name="infortisa_vendor_bill_id" readonly="1"/>
+            </group>
+            <group>
+              <button name="action_infortisa_status" type="object" string="Actualizar estado" class="btn-secondary"/>
+              <button name="action_infortisa_block" type="object" string="Bloquear" class="btn-secondary"/>
+              <button name="action_infortisa_unblock" type="object" string="Desbloquear" class="btn-secondary"/>
+              <button name="action_infortisa_cancel" type="object" string="Anular" class="btn-secondary"/>
+              <button name="action_infortisa_create_bill" type="object" string="Crear factura proveedor" class="btn-secondary"/>
+            </group>
+          </group>
+
+          <!-- Resumen humano -->
+          <group string="Resumen" col="2">
+            <group>
+              <field name="infortisa_mode_display" readonly="1" string="Modo"/>
+              <field name="infortisa_delivery_type" readonly="1" string="Tipo de envio"/>
+              <field name="infortisa_comment_display" readonly="1" string="Comentarios"/>
+            </group>
+            <group>
+              <label for="infortisa_shipping_display" string="Direccion de entrega"/>
+              <div style="max-height:120px; overflow:auto; border:1px solid #ddd; padding:6px; border-radius:6px;">
+                <field name="infortisa_shipping_display" widget="text" nolabel="1" readonly="1"/>
+              </div>
+            </group>
+          </group>
+
+          <!-- Totales (API) -->
+          <group string="Totales (API)" col="2">
+            <group>
+              <field name="infortisa_amount_base" readonly="1" string="Base (API)"/>
+              <field name="infortisa_amount_shipping" readonly="1" string="Portes (API)"/>
+              <field name="infortisa_amount_canon_op" readonly="1" string="Canon LPI (operacion)"/>
+            </group>
+            <group>
+              <field name="infortisa_amount_tax" readonly="1" string="Impuestos (API)"/>
+              <field name="infortisa_amount_total" readonly="1" string="Total (API)"/>
+              <field name="infortisa_amount_other_op" readonly="1" string="Otros costes (operacion)"/>
+            </group>
+          </group>
+
+          <!-- Productos (API) -->
+          <group string="Productos (API)" col="1">
+            <field name="infortisa_products_html" readonly="1" nolabel="1"/>
+          </group>
+
+          <!-- XML crudo -->
+          <group string="XML crudo" col="2">
+            <group string="Peticion API">
+              <div style="max-height:280px; overflow:auto; border:1px solid #ddd; padding:6px; border-radius:6px;">
+                <field name="infortisa_last_payload" widget="text" nolabel="1" readonly="1"
+                       style="font-family:monospace; white-space:pre;"/>
+              </div>
+            </group>
+            <group string="Respuesta">
+              <div style="max-height:280px; overflow:auto; border:1px solid #ddd; padding:6px; border-radius:6px;">
+                <field name="infortisa_last_response" widget="text" nolabel="1" readonly="1"
+                       style="font-family:monospace; white-space:pre;"/>
+              </div>
+            </group>
+            <group>
+              <button name="action_infortisa_open_raw"
+                      type="object"
+                      string="Ver en ventana (XML crudo)"
+                      class="btn-secondary"/>
+            </group>
+          </group>
+
+        </page>
+      </xpath>
+
+    </field>
+  </record>
+
+</odoo>
+ 
+ 
+ 
