@@ -4,21 +4,19 @@ pipeline {
     ansiColor('xterm')
     timestamps()
     timeout(time: 15, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
   }
-  environment {
-    STAGE_HOST   = '10.0.100.160'
-    ODOO_SERVICE = 'odoo'
-    DB_NAME      = 'odoo_nexus'
-    MODULE_NAME  = 'infortisa_orders'
+  triggers {
+    githubPush()
   }
   stages {
-    stage('SSH & Restart') {
+    stage('SSH & Restart Odoo') {
       steps {
         sshagent (credentials: ['deploy']) {
           sh '''
-            set -eu
-            ssh -o StrictHostKeyChecking=no deploy@${STAGE_HOST} "whoami && hostname"
-            ssh -o StrictHostKeyChecking=no deploy@${STAGE_HOST} "sudo -n systemctl restart ${ODOO_SERVICE} && sudo -n systemctl is-active --quiet ${ODOO_SERVICE}"
+            set -eux
+            ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 'whoami && hostname'
+            ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 "sudo -n systemctl restart odoo && sudo -n systemctl is-active --quiet odoo"
           '''
         }
       }
@@ -27,8 +25,8 @@ pipeline {
       steps {
         sshagent (credentials: ['deploy']) {
           sh '''
-            set -eu
-            ssh -o StrictHostKeyChecking=no deploy@${STAGE_HOST} "sudo -n -u odoo /usr/bin/odoo -c /etc/odoo/odoo.conf -d ${DB_NAME} -u ${MODULE_NAME} --stop-after-init"
+            set -eux
+            ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 "sudo -n -u odoo odoo -c /etc/odoo/odoo.conf -d odoo_nexus -u infortisa_orders --stop-after-init"
           '''
         }
       }
@@ -37,12 +35,17 @@ pipeline {
       steps {
         sshagent (credentials: ['deploy']) {
           sh '''
-            set -eu
-            ssh -o StrictHostKeyChecking=no deploy@${STAGE_HOST} "curl -fsS http://localhost:8069/web/login >/dev/null"
+            set -eux
+            ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 "curl -fsS http://localhost:8069/web/login >/dev/null"
             echo "STAGE OK"
           '''
         }
       }
+    }
+  }
+  post {
+    always {
+      echo "Build finished with status: ${currentBuild.currentResult}"
     }
   }
 }
