@@ -12,7 +12,7 @@ pipeline {
   stages {
     stage('SSH & Restart Odoo') {
       steps {
-        sshagent (credentials: ['deploy']) {
+        sshagent (credentials: ['ssh-stage']) {
           sh '''
             set -eux
             ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 'whoami && hostname'
@@ -23,7 +23,7 @@ pipeline {
     }
     stage('Upgrade módulo en STAGE') {
       steps {
-        sshagent (credentials: ['deploy']) {
+        sshagent (credentials: ['ssh-stage']) {
           sh '''
             set -eux
             ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 "sudo -n -u odoo odoo -c /etc/odoo/odoo.conf -d odoo_nexus -u infortisa_orders --stop-after-init"
@@ -33,7 +33,7 @@ pipeline {
     }
     stage('Health check') {
       steps {
-        sshagent (credentials: ['deploy']) {
+        sshagent (credentials: ['ssh-stage']) {
           sh '''
             set -eux
             ssh -o StrictHostKeyChecking=no deploy@10.0.100.160 "curl -fsS http://localhost:8069/web/login >/dev/null"
