@@ -104,8 +104,8 @@ def deployAndVerify(String user, String host) {
     // --- GIT: traer cambios del repo remoto ---
     shell("""
       if [ ! -d ${env.ADDON_DIR} ]; then
-        mkdir -p $(dirname ${env.ADDON_DIR})
-        cd $(dirname ${env.ADDON_DIR})
+        mkdir -p \$(dirname ${env.ADDON_DIR})
+        cd \$(dirname ${env.ADDON_DIR})
         git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git
       fi
       cd ${env.ADDON_DIR}
