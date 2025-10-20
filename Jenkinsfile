@@ -134,7 +134,7 @@ def deployAndVerify(String user, String host) {
     // --- Revisión de logs recientes del servicio ---
     // Muestra últimos 500 registros y falla si encuentra patrones de error
     sh """
-      set -euo pipefail
+      bash -lc 'set -euo pipefail
       echo "==== Últimas 500 líneas de journalctl en ${host} ===="
       ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
       echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
@@ -168,7 +168,7 @@ def deployAndVerify(String user, String host) {
 
     // Imprimir logs de error detallados para diagnosticar
     sh """
-      set -euo pipefail
+      bash -lc 'set -euo pipefail
       echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
       ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
     """
