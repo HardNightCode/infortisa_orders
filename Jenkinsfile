@@ -1,5 +1,5 @@
 pipeline { 
-  agent any
+  agent any 
 
   environment {
     MODULE_NAME   = 'infortisa_orders'
