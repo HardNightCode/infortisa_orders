@@ -82,10 +82,15 @@ pipeline {
 def deployAndVerify(String user, String host) {
   // 1) Git update con punto de rollback, 2) upgrade módulo, 3) restart, 4) health & logs, 5) rollback si falla
   def shell = { cmd ->
-    sh """
-      set -euxo pipefail
-      ssh -o StrictHostKeyChecking=no ${user}@${host} 'bash -lc ${quote(cmd)}'
-    """
+    // Ejecuta localmente en Jenkins con bash y dentro hace ssh bash -lc '...'
+    sh(
+      label: "remote ${host}",
+      script: """bash -lc ${quote("""
+  set -euo pipefail
+  ssh -o StrictHostKeyChecking=no ${user}@${host} bash -lc ${quote(cmd)}
+  """)}
+      """
+    )
   }
 
   // Obtener commits para posible rollback
@@ -133,13 +138,18 @@ def deployAndVerify(String user, String host) {
 
     // --- Revisión de logs recientes del servicio ---
     // Muestra últimos 500 registros y falla si encuentra patrones de error
-    sh """
-      bash -lc 'set -euo pipefail
-      echo "==== Últimas 500 líneas de journalctl en ${host} ===="
-      ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
-      echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
-      ! egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log || (echo 'Se detectaron errores en logs.' && exit 1)
-    """
+    sh(
+      script: """bash -lc ${quote("""
+    set -euo pipefail
+    echo "==== Últimas 500 líneas de journalctl en ${host} ===="
+    ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
+    echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
+    if egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log; then
+      echo 'Se detectaron errores en logs.'
+      exit 1
+    fi
+    """)}
+    )
 
     echo "✅ ${host}: Deploy y verificación OK"
   }
@@ -167,11 +177,13 @@ def deployAndVerify(String user, String host) {
     }
 
     // Imprimir logs de error detallados para diagnosticar
-    sh """
-      bash -lc 'set -euo pipefail
-      echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
-      ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
-    """
+    sh(
+      script: """bash -lc ${quote("""
+    set -euo pipefail
+    echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
+    ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
+    """)}
+    )
     error("Abortando pipeline por fallo en ${host}.")
   }
 }
