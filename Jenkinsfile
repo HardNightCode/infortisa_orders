@@ -14,13 +14,13 @@ pipeline {
 
     // --- STAGE ---
     STAGE_HOST    = '10.0.100.160'
-    STAGE_USER    = 'deploy'              // <--- cambia si usas otro usuario
-    STAGE_CREDS   = 'ssh-stage'           // <--- ID de credencial Jenkins válida para STAGE
+    STAGE_USER    = 'deploy'
+    STAGE_CREDS   = 'ssh-stage'
 
     // --- PROD ---
     PROD_HOST     = '10.0.100.152'
-    PROD_USER     = 'deploy'              // <--- cambia si usas otro usuario
-    PROD_CREDS    = 'ssh-prod'            // <--- ID de credencial Jenkins válida para PROD
+    PROD_USER     = 'deploy'
+    PROD_CREDS    = 'ssh-prod'
   }
 
   options {
@@ -31,7 +31,6 @@ pipeline {
   }
 
   triggers {
-    // Si usas GitHub webhook, deja este; si no, usa pollSCM
     githubPush()
     // pollSCM('* * * * *')  // opcional
   }
@@ -40,7 +39,6 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        // Jenkins ya obtiene Jenkinsfile del repo; aquí solo informe
         echo "SCM: ${env.GIT_URL ?: 'git@github.com:HardNightCode/infortisa_orders.git'}"
       }
     }
@@ -68,16 +66,12 @@ pipeline {
   }
 
   post {
-    success {
-      echo '✅ Pipeline OK: STAGE y PROD desplegados sin errores.'
-    }
-    failure {
-      echo '❌ Pipeline FAILED. Revisa la etapa donde ocurrió y los logs impresos arriba.'
-    }
+    success { echo '✅ Pipeline OK: STAGE y PROD desplegados sin errores.' }
+    failure { echo '❌ Pipeline FAILED. Revisa la etapa donde ocurrió y los logs impresos arriba.' }
   }
 }
 
-// ============ FUNCIONES GROOVY REUTILIZABLES ============
+// ================= FUNCIONES =================
 
 def deployAndVerify(String user, String host) {
   // Helpers: ejecutar remoto con bash y quoting robusto
@@ -102,46 +96,37 @@ ssh -o StrictHostKeyChecking=no ${u}@${h} bash -lc ${quote(cmd)}
     ).trim()
   }
 
-  // Evitar $(dirname ...): lo calculamos en Groovy
+  // Calculamos parent sin $(dirname …)
   def addonDir    = env.ADDON_DIR
   def addonParent = addonDir.contains('/') ? addonDir.substring(0, addonDir.lastIndexOf('/')) : '.'
 
-  // 1) Obtener commit previo para posible rollback (como odoo)
-  def prevCommit = sshRunOut(user, host, """
-if [ -d "${addonDir}/.git" ]; then
-  sudo -u odoo git -C "${addonDir}" rev-parse HEAD~1 2>/dev/null || true
-fi
-""")
-
+  // 1) Commit previo (para rollback), ejecutando como odoo
+  def prevCommit = sshRunOut(user, host,
+    "if [ -d \"${addonDir}/.git\" ]; then sudo -u odoo git -C \"${addonDir}\" rev-parse HEAD~1 2>/dev/null || true; fi"
+  )
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
 
   try {
-    // 2) GIT: traer cambios del repo remoto (si no existe, clona; siempre como odoo)
+    // 2) Git update como odoo + safe.directory
     sshRun(user, host, """
-# Crear el parent con owner odoo y permisos razonables
 sudo install -d -o odoo -g odoo -m 775 "${addonParent}"
 
-# Clonar si no existe repo
 if [ ! -d "${addonDir}/.git" ]; then
   sudo -u odoo git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git "${addonDir}"
 fi
 
-# Asegurar ownership correcto
 sudo chown -R odoo:odoo "${addonDir}"
-
-# Marcar como safe.directory para Git >= 2.35 (ejecutado por el usuario odoo)
 sudo -u odoo git config --global --add safe.directory "${addonDir}" || true
 
-# Actualizar al último commit conocido
 sudo -u odoo git -C "${addonDir}" fetch --all --prune
 sudo -u odoo git -C "${addonDir}" reset --hard origin/main
 sudo -u odoo git -C "${addonDir}" rev-parse HEAD
 """)
 
     // 3) Upgrade de módulo en Odoo
-    sshRun(user, host, """
-sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
-""")
+    sshRun(user, host,
+      "sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init"
+    )
 
     // 4) Restart servicio
     sshRun(user, host, """
@@ -150,12 +135,11 @@ sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
 """)
 
     // 5) Health check
-    sshRun(user, host, """
-curl -fsS http://localhost:8069/web/login >/dev/null
-echo 'Health OK'
-""")
+    sshRun(user, host,
+      "curl -fsS http://localhost:8069/web/login >/dev/null && echo 'Health OK'"
+    )
 
-    // 6) Revisar logs recientes y fallar si hay patrones de error
+    // 6) Logs + detección de errores
     sh(
       script: """bash -lc ${quote("""
 set -euo pipefail
@@ -174,18 +158,20 @@ fi
   } catch (err) {
     echo "❌ ${host}: FALLO detectado. Iniciando ROLLBACK…"
     if (prevCommit) {
-      // 7) Rollback al commit anterior (como odoo)
-      sshRun(user, host, """
-sudo -u odoo git -C "${addonDir}" reset --hard ${prevCommit}
-""")
+      // 7) Rollback al commit anterior (string de UNA línea para evitar el bug de parsing)
+      sshRun(user, host, "sudo -u odoo git -C \"${addonDir}\" reset --hard ${prevCommit}")
+
       // Reintento de upgrade + restart + health
       try {
-        sshRun(user, host, """
-sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
-sudo -n systemctl restart ${env.SERVICE_NAME}
-sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
-curl -fsS http://localhost:8069/web/login >/dev/null
-""")
+        sshRun(user, host,
+          "sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init"
+        )
+        sshRun(user, host,
+          "sudo -n systemctl restart ${env.SERVICE_NAME} && sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}"
+        )
+        sshRun(user, host,
+          "curl -fsS http://localhost:8069/web/login >/dev/null"
+        )
       } catch (err2) {
         echo "⚠️ ${host}: Rollback aplicado pero verificación falló. Revisa logs."
       }
@@ -210,4 +196,3 @@ def quote(String s) {
   // Escapa comillas simples para inyectar el bloque dentro de bash -lc '...'
   return "'${s.replace("'", "'\"'\"'")}'"
 }
-
