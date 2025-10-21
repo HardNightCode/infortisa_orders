@@ -2,22 +2,18 @@ pipeline {
   agent any
 
   environment {
-    // --- Ajustes comunes ---
     MODULE_NAME   = 'infortisa_orders'
     ODOO_BIN      = '/usr/bin/odoo'
     ODOO_CONF     = '/etc/odoo/odoo.conf'
     ADDON_DIR     = "/opt/odoo/custom/addons/${env.MODULE_NAME}"
     SERVICE_NAME  = 'odoo'
     DB_NAME       = 'odoo_nexus'
-    // patrones de error para logs
     ERR_PATTERNS  = "ERROR|Traceback|CRITICAL|psycopg2|odoo.exceptions|xmlrpc.client.Fault|IntegrityError"
 
-    // --- STAGE ---
     STAGE_HOST    = '10.0.100.160'
     STAGE_USER    = 'deploy'
     STAGE_CREDS   = 'ssh-stage'
 
-    // --- PROD ---
     PROD_HOST     = '10.0.100.152'
     PROD_USER     = 'deploy'
     PROD_CREDS    = 'ssh-prod'
@@ -32,7 +28,6 @@ pipeline {
 
   triggers {
     githubPush()
-    // pollSCM('* * * * *')  // opcional
   }
 
   stages {
@@ -66,18 +61,20 @@ pipeline {
   }
 }
 
-// ================= FUNCIONES =================
+// ================== FUNCIONES ==================
 
 def deployAndVerify(String user, String host) {
-  // --- Helpers con heredoc: cero interpolación rara en Groovy ---
+
+  // Helpers: fuerzan bash via heredoc (sin shebangs con opciones)
   def sshRun = { String cmd ->
     sh(
       label: "remote ${host}",
-      script: """#!/bin/bash -euo pipefail
+      script: """bash -euo pipefail <<'LOCAL_EOF'
 ssh -o StrictHostKeyChecking=no ${user}@${host} 'bash -s' <<'REMOTE_EOF'
 set -euo pipefail
 ${cmd}
 REMOTE_EOF
+LOCAL_EOF
 """
     )
   }
@@ -85,20 +82,20 @@ REMOTE_EOF
   def sshRunOut = { String cmd ->
     return sh(
       returnStdout: true,
-      script: """#!/bin/bash -euo pipefail
+      script: """bash -euo pipefail <<'LOCAL_EOF'
 ssh -o StrictHostKeyChecking=no ${user}@${host} 'bash -s' <<'REMOTE_EOF'
 set -euo pipefail
 ${cmd}
 REMOTE_EOF
+LOCAL_EOF
 """
     ).trim()
   }
 
-  // Derivar parent sin $(dirname …)
   final String addonDir    = env.ADDON_DIR
   final String addonParent = addonDir.contains('/') ? addonDir.substring(0, addonDir.lastIndexOf('/')) : '.'
 
-  // 1) Commit previo (para rollback), ejecutando como odoo
+  // 1) Commit previo (para rollback)
   def prevCommit = sshRunOut("""
 if [ -d "${addonDir}/.git" ]; then
   sudo -u odoo git -C "${addonDir}" rev-parse HEAD~1 2>/dev/null || true
@@ -107,7 +104,7 @@ fi
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
 
   try {
-    // 2) Git update como odoo + safe.directory
+    // 2) Git update como odoo (y safe.directory)
     sshRun("""
 sudo install -d -o odoo -g odoo -m 775 "${addonParent}"
 
@@ -123,10 +120,8 @@ sudo -u odoo git -C "${addonDir}" reset --hard origin/main
 sudo -u odoo git -C "${addonDir}" rev-parse HEAD
 """)
 
-    // 3) Upgrade de módulo en Odoo
-    sshRun("""
-sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
-""")
+    // 3) Upgrade de módulo
+    sshRun("""sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init""")
 
     // 4) Restart servicio
     sshRun("""
@@ -135,14 +130,11 @@ sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
 """)
 
     // 5) Health check
-    sshRun("""
-curl -fsS http://localhost:8069/web/login >/dev/null
-echo 'Health OK'
-""")
+    sshRun("""curl -fsS http://localhost:8069/web/login >/dev/null""")
 
-    // 6) Logs + detección de errores (se hace local en Jenkins, leyendo remoto por ssh)
+    // 6) Logs + detección de errores
     sh(
-      script: """#!/bin/bash -euo pipefail
+      script: """bash -euo pipefail <<'LOCAL_EOF'
 echo "==== Últimas 500 líneas de journalctl en ${host} ===="
 ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
 echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
@@ -150,6 +142,7 @@ if egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log; then
   echo 'Se detectaron errores en logs.'
   exit 1
 fi
+LOCAL_EOF
 """
     )
 
@@ -158,9 +151,7 @@ fi
   } catch (err) {
     echo "❌ ${host}: FALLO detectado. Iniciando ROLLBACK…"
     if (prevCommit) {
-      // 7) Rollback al commit anterior + reintentos
       sshRun("""sudo -u odoo git -C "${addonDir}" reset --hard ${prevCommit}""")
-
       try {
         sshRun("""sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init""")
         sshRun("""sudo -n systemctl restart ${env.SERVICE_NAME}""")
@@ -173,11 +164,12 @@ fi
       echo "⚠️ ${host}: No hay commit previo para rollback."
     }
 
-    // 8) Imprimir logs tras el error para diagnosticar
+    // Logs tras el error
     sh(
-      script: """#!/bin/bash -euo pipefail
+      script: """bash -euo pipefail <<'LOCAL_EOF'
 echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
 ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
+LOCAL_EOF
 """
     )
     error("Abortando pipeline por fallo en ${host}.")
