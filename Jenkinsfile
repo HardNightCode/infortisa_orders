@@ -80,95 +80,101 @@ pipeline {
 // ============ FUNCIONES GROOVY REUTILIZABLES ============
 
 def deployAndVerify(String user, String host) {
-  // 1) Git update con punto de rollback, 2) upgrade módulo, 3) restart, 4) health & logs, 5) rollback si falla
-  def shell = { cmd ->
-    // Ejecuta localmente en Jenkins con bash y dentro hace ssh bash -lc '...'
+  // Helpers: ejecutar remoto con bash y quoting robusto
+  def runRemote = { String cmd ->
     sh(
       label: "remote ${host}",
       script: """bash -lc ${quote("""
-  set -euo pipefail
-  ssh -o StrictHostKeyChecking=no ${user}@${host} bash -lc ${quote(cmd)}
-  """)}
+set -euo pipefail
+ssh -o StrictHostKeyChecking=no ${user}@${host} bash -lc ${quote(cmd)}
+""")}
       """
     )
   }
 
-  // Obtener commits para posible rollback
-  def prevCommit = sh(returnStdout: true, script: """
-    ssh -o StrictHostKeyChecking=no ${user}@${host} 'bash -lc "
-      if [ -d ${env.ADDON_DIR}/.git ]; then
-        cd ${env.ADDON_DIR}
-        git rev-parse HEAD~1 2>/dev/null || true
-      fi
-    "'
-  """).trim()
+  def runRemoteOut = { String cmd ->
+    sh(
+      returnStdout: true,
+      script: """bash -lc ${quote("""
+ssh -o StrictHostKeyChecking=no ${user}@${host} bash -lc ${quote(cmd)}
+""")}
+    """
+    ).trim()
+  }
+
+  // 1) Obtener commit previo para posible rollback (¡sin romper las comillas!)
+  def prevCommit = runRemoteOut("""
+if [ -d ${env.ADDON_DIR}/.git ]; then
+  cd ${env.ADDON_DIR}
+  git rev-parse HEAD~1 2>/dev/null || true
+fi
+""")
 
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
 
   try {
-    // --- GIT: traer cambios del repo remoto ---
-    shell("""
-      if [ ! -d ${env.ADDON_DIR} ]; then
-        mkdir -p \$(dirname ${env.ADDON_DIR})
-        cd \$(dirname ${env.ADDON_DIR})
-        git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git
-      fi
-      cd ${env.ADDON_DIR}
-      git fetch --all --prune
-      git reset --hard origin/main
-      git rev-parse HEAD
-    """)
+    // 2) GIT: traer cambios del repo remoto (crea carpeta si no existe)
+    runRemote("""
+if [ ! -d ${env.ADDON_DIR} ]; then
+  mkdir -p "$(dirname ${env.ADDON_DIR})"
+  cd "$(dirname ${env.ADDON_DIR})"
+  git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git
+fi
+cd ${env.ADDON_DIR}
+git fetch --all --prune
+git reset --hard origin/main
+git rev-parse HEAD
+""")
 
-    // --- Upgrade de módulo en Odoo ---
-    shell("""
-      sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
-    """)
+    // 3) Upgrade de módulo en Odoo
+    runRemote("""
+sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
+""")
 
-    // --- Restart servicio ---
-    shell("""
-      sudo -n systemctl restart ${env.SERVICE_NAME}
-      sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
-    """)
+    // 4) Restart servicio
+    runRemote("""
+sudo -n systemctl restart ${env.SERVICE_NAME}
+sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
+""")
 
-    // --- Health check Odoo web (local al host) ---
-    shell("""
-      curl -fsS http://localhost:8069/web/login >/dev/null
-      echo 'Health OK'
-    """)
+    // 5) Health check
+    runRemote("""
+curl -fsS http://localhost:8069/web/login >/dev/null
+echo 'Health OK'
+""")
 
-    // --- Revisión de logs recientes del servicio ---
-    // Muestra últimos 500 registros y falla si encuentra patrones de error
+    // 6) Revisar logs recientes y fallar si hay patrones de error
     sh(
       script: """bash -lc ${quote("""
-    set -euo pipefail
-    echo "==== Últimas 500 líneas de journalctl en ${host} ===="
-    ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
-    echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
-    if egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log; then
-      echo 'Se detectaron errores en logs.'
-      exit 1
-    fi
-    """)}
+set -euo pipefail
+echo "==== Últimas 500 líneas de journalctl en ${host} ===="
+ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
+echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
+if egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log; then
+  echo 'Se detectaron errores en logs.'
+  exit 1
+fi
+""")}
     )
 
     echo "✅ ${host}: Deploy y verificación OK"
-  }
-  catch (err) {
+
+  } catch (err) {
     echo "❌ ${host}: FALLO detectado. Iniciando ROLLBACK…"
     if (prevCommit) {
-      // Rollback al commit anterior del módulo
-      shell("""
-        cd ${env.ADDON_DIR}
-        git reset --hard ${prevCommit}
-      """)
-      // Reintento de upgrade + restart
+      // 7) Rollback al commit anterior
+      runRemote("""
+cd ${env.ADDON_DIR}
+git reset --hard ${prevCommit}
+""")
+      // Reintento de upgrade + restart + health
       try {
-        shell("""
-          sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
-          sudo -n systemctl restart ${env.SERVICE_NAME}
-          sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
-          curl -fsS http://localhost:8069/web/login >/dev/null
-        """)
+        runRemote("""
+sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
+sudo -n systemctl restart ${env.SERVICE_NAME}
+sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
+curl -fsS http://localhost:8069/web/login >/dev/null
+""")
       } catch (err2) {
         echo "⚠️ ${host}: Rollback aplicado pero verificación falló. Revisa logs."
       }
@@ -176,13 +182,13 @@ def deployAndVerify(String user, String host) {
       echo "⚠️ ${host}: No hay commit previo para rollback."
     }
 
-    // Imprimir logs de error detallados para diagnosticar
+    // 8) Imprimir logs tras el error para diagnosticar
     sh(
       script: """bash -lc ${quote("""
-    set -euo pipefail
-    echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
-    ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
-    """)}
+set -euo pipefail
+echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
+ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
+""")}
     )
     error("Abortando pipeline por fallo en ${host}.")
   }
@@ -190,6 +196,6 @@ def deployAndVerify(String user, String host) {
 
 @NonCPS
 def quote(String s) {
-  // Escapar comillas para bash -lc
+  // Escapa comillas simples para inyectar el bloque dentro de bash -lc '...'
   return "'${s.replace("'", "'\"'\"'")}'"
 }
