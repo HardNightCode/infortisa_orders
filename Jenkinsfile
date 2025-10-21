@@ -9,18 +9,18 @@ pipeline {
     ADDON_DIR     = "/opt/odoo/custom/addons/${env.MODULE_NAME}"
     SERVICE_NAME  = 'odoo'
     DB_NAME       = 'odoo_nexus'
-    // Palabras de error a buscar en journalctl
+    // errores (palabras a buscar en logs para fallos)
     ERR_PATTERNS  = "ERROR|Traceback|CRITICAL|psycopg2|odoo.exceptions|xmlrpc.client.Fault|IntegrityError"
 
     // --- STAGE ---
     STAGE_HOST    = '10.0.100.160'
-    STAGE_USER    = 'deploy'
-    STAGE_CREDS   = 'ssh-stage'   // ID credencial Jenkins
+    STAGE_USER    = 'deploy'              // <--- cambia si usas otro usuario
+    STAGE_CREDS   = 'ssh-stage'           // <--- ID de credencial Jenkins válida para STAGE
 
     // --- PROD ---
     PROD_HOST     = '10.0.100.152'
-    PROD_USER     = 'deploy'
-    PROD_CREDS    = 'ssh-prod'    // ID credencial Jenkins
+    PROD_USER     = 'deploy'              // <--- cambia si usas otro usuario
+    PROD_CREDS    = 'ssh-prod'            // <--- ID de credencial Jenkins válida para PROD
   }
 
   options {
@@ -31,7 +31,8 @@ pipeline {
   }
 
   triggers {
-    githubPush()   // usa tu webhook de GitHub
+    // Si usas GitHub webhook, deja este; si no, usa pollSCM
+    githubPush()
     // pollSCM('* * * * *')  // opcional
   }
 
@@ -39,6 +40,7 @@ pipeline {
 
     stage('Checkout') {
       steps {
+        // Jenkins ya obtiene Jenkinsfile del repo; aquí solo informe
         echo "SCM: ${env.GIT_URL ?: 'git@github.com:HardNightCode/infortisa_orders.git'}"
       }
     }
@@ -75,109 +77,137 @@ pipeline {
   }
 }
 
-// ===================== Helpers =====================
-
-// Ejecuta comandos en el host remoto via SSH (sin capturar salida)
-def sshRun(String user, String host, String remoteScript) {
-  sh """#!/usr/bin/env bash
-set -euo pipefail
-ssh -o StrictHostKeyChecking=no ${user}@${host} /bin/bash -s <<'REMOTE'
-set -euo pipefail
-${remoteScript}
-REMOTE
-"""
-}
-
-// Ejecuta comandos en el host remoto via SSH y devuelve stdout (trim)
-def sshRunOut(String user, String host, String remoteScript) {
-  return sh(script: """#!/usr/bin/env bash
-set -euo pipefail
-ssh -o StrictHostKeyChecking=no ${user}@${host} /bin/bash -s <<'REMOTE'
-set -euo pipefail
-${remoteScript}
-REMOTE
-""", returnStdout: true).trim()
-}
-
-// ================== Deploy + Verificación ==================
+// ============ FUNCIONES GROOVY REUTILIZABLES ============
 
 def deployAndVerify(String user, String host) {
-  // Calcula el padre del directorio del add-on (sin usar $(dirname ...))
+  // Helpers: ejecutar remoto con bash y quoting robusto
+  def sshRun = { String u, String h, String cmd ->
+    sh(
+      label: "remote ${h}",
+      script: """bash -lc ${quote("""
+set -euo pipefail
+ssh -o StrictHostKeyChecking=no ${u}@${h} bash -lc ${quote(cmd)}
+""")}
+      """
+    )
+  }
+
+  def sshRunOut = { String u, String h, String cmd ->
+    sh(
+      returnStdout: true,
+      script: """bash -lc ${quote("""
+ssh -o StrictHostKeyChecking=no ${u}@${h} bash -lc ${quote(cmd)}
+""")}
+      """
+    ).trim()
+  }
+
+  // Evitar $(dirname ...): lo calculamos en Groovy
   def addonDir    = env.ADDON_DIR
   def addonParent = addonDir.contains('/') ? addonDir.substring(0, addonDir.lastIndexOf('/')) : '.'
 
-  // Commit previo para posible rollback
+  // 1) Obtener commit previo para posible rollback (como odoo)
   def prevCommit = sshRunOut(user, host, """
 if [ -d "${addonDir}/.git" ]; then
-  cd "${addonDir}"
-  git rev-parse HEAD~1 2>/dev/null || true
+  sudo -u odoo git -C "${addonDir}" rev-parse HEAD~1 2>/dev/null || true
 fi
 """)
+
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
 
   try {
-    // --- 1) GIT: clonar/actualizar módulo ---
+    // 2) GIT: traer cambios del repo remoto (si no existe, clona; siempre como odoo)
     sshRun(user, host, """
-if [ ! -d "${addonDir}" ]; then
-  mkdir -p "${addonParent}"
-  cd "${addonParent}"
-  git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git
+# Crear el parent con owner odoo y permisos razonables
+sudo install -d -o odoo -g odoo -m 775 "${addonParent}"
+
+# Clonar si no existe repo
+if [ ! -d "${addonDir}/.git" ]; then
+  sudo -u odoo git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git "${addonDir}"
 fi
-cd "${addonDir}"
-git fetch --all --prune
-git reset --hard origin/main
-git rev-parse HEAD
+
+# Asegurar ownership correcto
+sudo chown -R odoo:odoo "${addonDir}"
+
+# Marcar como safe.directory para Git >= 2.35 (ejecutado por el usuario odoo)
+sudo -u odoo git config --global --add safe.directory "${addonDir}" || true
+
+# Actualizar al último commit conocido
+sudo -u odoo git -C "${addonDir}" fetch --all --prune
+sudo -u odoo git -C "${addonDir}" reset --hard origin/main
+sudo -u odoo git -C "${addonDir}" rev-parse HEAD
 """)
 
-    // --- 2) Upgrade de módulo en Odoo ---
+    // 3) Upgrade de módulo en Odoo
     sshRun(user, host, """
 sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
 """)
 
-    // --- 3) Restart servicio + health check ---
+    // 4) Restart servicio
     sshRun(user, host, """
 sudo -n systemctl restart ${env.SERVICE_NAME}
 sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
+""")
+
+    // 5) Health check
+    sshRun(user, host, """
 curl -fsS http://localhost:8069/web/login >/dev/null
 echo 'Health OK'
 """)
 
-    // --- 4) Logs y detección de errores ---
-    // Hacemos todo en remoto para evitar más quoting
-    sshRun(user, host, """
+    // 6) Revisar logs recientes y fallar si hay patrones de error
+    sh(
+      script: """bash -lc ${quote("""
+set -euo pipefail
 echo "==== Últimas 500 líneas de journalctl en ${host} ===="
-sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true
+ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager || true' | tee /tmp/journal_${host}.log
 echo "==== Grep de errores en ${host} (si coincide, fallará) ===="
-if sudo -n journalctl -u ${env.SERVICE_NAME} -n 500 --no-pager | egrep -i '${env.ERR_PATTERNS}'; then
+if egrep -i '${env.ERR_PATTERNS}' /tmp/journal_${host}.log; then
   echo 'Se detectaron errores en logs.'
   exit 1
 fi
-""")
+""")}
+    )
 
     echo "✅ ${host}: Deploy y verificación OK"
 
   } catch (err) {
     echo "❌ ${host}: FALLO detectado. Iniciando ROLLBACK…"
     if (prevCommit) {
-      // 5) Rollback al commit anterior y reintento rápido
+      // 7) Rollback al commit anterior (como odoo)
       sshRun(user, host, """
-cd "${addonDir}"
-git reset --hard ${prevCommit}
+sudo -u odoo git -C "${addonDir}" reset --hard ${prevCommit}
+""")
+      // Reintento de upgrade + restart + health
+      try {
+        sshRun(user, host, """
 sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init
 sudo -n systemctl restart ${env.SERVICE_NAME}
 sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
 curl -fsS http://localhost:8069/web/login >/dev/null
 """)
+      } catch (err2) {
+        echo "⚠️ ${host}: Rollback aplicado pero verificación falló. Revisa logs."
+      }
     } else {
       echo "⚠️ ${host}: No hay commit previo para rollback."
     }
 
-    // 6) Dump de logs extenso para diagnóstico
-    sshRun(user, host, """
+    // 8) Imprimir logs tras el error para diagnosticar
+    sh(
+      script: """bash -lc ${quote("""
+set -euo pipefail
 echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
-sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true
-""")
-
+ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
+""")}
+    )
     error("Abortando pipeline por fallo en ${host}.")
   }
 }
+
+@NonCPS
+def quote(String s) {
+  // Escapa comillas simples para inyectar el bloque dentro de bash -lc '...'
+  return "'${s.replace("'", "'\"'\"'")}'"
+}
+
