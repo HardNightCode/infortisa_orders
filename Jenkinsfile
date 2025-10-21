@@ -1,6 +1,6 @@
 pipeline {     
   agent any  
- 
+  
   environment {
     MODULE_NAME   = 'infortisa_orders'
     ODOO_BIN      = '/usr/bin/odoo'
