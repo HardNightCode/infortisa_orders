@@ -109,6 +109,11 @@ if [ -d ${env.ADDON_DIR}/.git ]; then
   git rev-parse HEAD~1 2>/dev/null || true
 fi
 """)
+  
+  // Evitar $(dirname ...): lo calculamos en Groovy
+  def addonDir    = env.ADDON_DIR
+  def addonParent = addonDir.contains('/') ? addonDir.substring(0, addonDir.lastIndexOf('/')) : '.'
+
 
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
 
@@ -116,8 +121,8 @@ fi
     // 2) GIT: traer cambios del repo remoto (crea carpeta si no existe)
     runRemote("""
 if [ ! -d ${env.ADDON_DIR} ]; then
-  mkdir -p "$(dirname ${env.ADDON_DIR})"
-  cd "$(dirname ${env.ADDON_DIR})"
+  mkdir -p ${addonParent}
+  cd ${addonParent}
   git clone git@github.com:HardNightCode/${env.MODULE_NAME}.git
 fi
 cd ${env.ADDON_DIR}
