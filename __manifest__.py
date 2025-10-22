@@ -11,7 +11,7 @@
     "depends": [
         "sale_management",
         "account",
-        "website_sale",dqwewgtq2eyeqtwy
+        "website_sale",
         "delivery",
         "account_batch_payment",
 	"account_iso20022"
