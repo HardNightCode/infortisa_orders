@@ -168,7 +168,7 @@ LOCAL_EOF
     sh(
       script: """bash -euo pipefail <<'LOCAL_EOF'
 echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
-ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 800 --no-pager || true'
+ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 250 --no-pager || true'
 LOCAL_EOF
 """
     )
