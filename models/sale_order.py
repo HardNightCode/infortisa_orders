@@ -33,7 +33,7 @@ class ResConfigSettings(models.TransientModel):
         config_parameter="infortisa.default_block",
         default=False,  # <- cambiado (antes True)
     )
-    # FacturaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n proveedor
+    # Facturación proveedor
     infortisa_vendor_id = fields.Many2one(
         "res.partner",
         string="Proveedor Infortisa",
@@ -57,7 +57,7 @@ class ResConfigSettings(models.TransientModel):
         config_parameter="infortisa.journal_id",
     )
 
-    # NUEVO: pagos automÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ticos
+    # NUEVO: pagos automáticos
     infortisa_bank_journal_payment_id = fields.Many2one(
         "account.journal",
         string="Diario de banco para pagos",
@@ -142,7 +142,7 @@ class SaleOrder(models.Model):
         copy=False,
     )
 
-    # --- Gatekeeper: sÃ³lo usar Infortisa si hay al menos 1 lÃ­nea con el proveedor configurado
+    # --- Gatekeeper: sólo usar Infortisa si hay al menos 1 línea con el proveedor configurado
     infortisa_allowed = fields.Boolean(
         string="Usar flujo Infortisa",
         compute="_compute_infortisa_allowed",
@@ -162,7 +162,7 @@ class SaleOrder(models.Model):
         return self.env["res.partner"].browse(vid_int) if vid_int else self.env["res.partner"].browse(False)
 
     def _line_has_infortisa_vendor(self, line, vendor_partner):
-        """True si la lÃ­nea pertenece a un producto que tiene como proveedor al partner indicado."""
+        """True si la línea pertenece a un producto que tiene como proveedor al partner indicado."""
         if not vendor_partner or not vendor_partner.exists():
             return False
         if not line or line.display_type or getattr(line, "is_delivery", False):
@@ -171,18 +171,18 @@ class SaleOrder(models.Model):
         if not product:
             return False
 
-        # Odoo estÃ¡ndar: proveedores del producto = seller_ids (model: product.supplierinfo)
-        # Â¡OJO! El campo correcto es partner_id, NO name.
+        # Odoo estándar: proveedores del producto = seller_ids (model: product.supplierinfo)
+        # ¡OJO! El campo correcto es partner_id, NO name.
         sellers = product.seller_ids.filtered(
             lambda s: s.partner_id and s.partner_id.id == vendor_partner.id
         )
 
-        # (Opcional) Si usÃ¡is un campo personalizado en el producto para â€œProveedorâ€, descomenta/adapta:
+        # (Opcional) Si usáis un campo personalizado en el producto para “Proveedor”, descomenta/adapta:
         # if hasattr(product, 'x_studio_proveedor') and product.x_studio_proveedor and product.x_studio_proveedor.id == vendor_partner.id:
         #     return True
 
         return bool(sellers)
-    
+
     @api.depends(
         "order_line.product_id",
         "order_line.product_id.seller_ids.partner_id",  # <- dependemos de partner_id, no de 'name'
@@ -195,7 +195,7 @@ class SaleOrder(models.Model):
             allowed = False
             if vendor and vendor.exists():
                 for l in order.order_line:
-                    # ProtecciÃ³n extra: nunca reventar el compute durante una carga/upgrade
+                    # Protección extra: nunca reventar el compute durante una carga/upgrade
                     try:
                         if order._line_has_infortisa_vendor(l, vendor):
                             allowed = True
@@ -203,8 +203,71 @@ class SaleOrder(models.Model):
                     except Exception:
                         continue
             order.infortisa_allowed = allowed
-            
+
     # ===== util =====
+    def _is_ceuta_address(self, partner):
+        """Detecta si un partner representa una dirección de CEUTA (ES)."""
+        if not partner:
+            return False
+        zipc = (partner.zip or "").strip()
+        city = (partner.city or "").strip().upper()
+        st_name = ((partner.state_id and partner.state_id.name) or "").strip().upper()
+        st_code = ((partner.state_id and partner.state_id.code) or "").strip().upper()
+        cc = ((partner.country_id and partner.country_id.code) or "ES").upper()
+
+        if cc != "ES":
+            return False
+
+        # Señales fuertes
+        if zipc.startswith("510"):
+            return True
+        if "CEUTA" in city:
+            return True
+
+        # El estado "CE/CEUTA" solo cuenta si además cuadra zip o ciudad
+        if (st_name == "CEUTA" or st_code == "CE") and (zipc.startswith("510") or "CEUTA" in city):
+            return True
+
+        return False
+
+    def _infortisa_get_effective_shipping_partner(self):
+        """Devuelve el partner de 'envío efectivo' (lo elegido en el checkout).
+        Prioriza partner_shipping_id si existe; si no, partner_id."""
+        self.ensure_one()
+        return self.partner_shipping_id or self.partner_id
+
+    def _infortisa_build_shipping_values(self):
+        """Devuelve (ship_dict, use_ceuta_override) partiendo SIEMPRE de la dirección
+        efectiva de envío (checkout). Sirve para XML y para el Resumen."""
+        self.ensure_one()
+        p = self._infortisa_get_effective_shipping_partner()
+
+        use_ceuta = self._is_ceuta_address(p)
+
+        if use_ceuta:
+            ship = {
+                "company": "LOGISTICA Y TRANSPORTES DE CEUTA SL",
+                "contact": "Federico Conejero",
+                "phone":   "600589947",
+                "addr1":   "CL ARRABAL PARCELA 10",
+                "addr2":   "",
+                "zip":     "11360",
+                "city":    "SAN ROQUE",
+                "cc":      "ES",
+            }
+        else:
+            ship = {
+                "company": (p.name or "Cliente")[:50],
+                "contact": p.name or "",
+                "phone":   p.phone or p.mobile or "",
+                "addr1":   (p.street or "")[:40],
+                "addr2":   (p.street2 or "")[:40],
+                "zip":     p.zip or "",
+                "city":    p.city or "",
+                "cc":      (p.country_id and p.country_id.code) or "ES",
+            }
+        return ship, use_ceuta
+
     def _icp_bool(self, key, default=False):
         """Lectura robusta de booleans en ir.config_parameter."""
         val = self.env["ir.config_parameter"].sudo().get_param(key, str(bool(default)))
@@ -216,24 +279,20 @@ class SaleOrder(models.Model):
             # 1) Modo
             test_mode = order._icp_bool("infortisa.test_mode", False)
             order.infortisa_mode_display = "TEST" if test_mode else "REAL"
-            # 2) Tipo de envÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­o
+            # 2) Tipo de envío
             order.infortisa_delivery_type = "ENV"
-            # 3) DirecciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n compuesta
-            p = order.partner_shipping_id or order.partner_id
-            name = (p.name or "").strip()
-            phone = (p.phone or p.mobile or "").strip()
-            addr1 = (p.street or "")[:40]
-            addr2 = (p.street2 or "")[:40]
-            zipc = (p.zip or "").strip()
-            city = (p.city or "").strip()
-            cc = (p.country_id and p.country_id.code) or "ES"
-            addr_lines = [
-                name,
-                f"{phone}" if phone else "",
-                f"{addr1} {addr2}".strip(),
-                f"{zipc} {city} ({cc})".strip(),
+
+            # 3) Dirección compuesta (siempre desde la dirección efectiva/checkout)
+            ship, use_ceuta = order._infortisa_build_shipping_values()
+            lines = [
+                ship.get("company") or "",
+                ship.get("contact") or "",
+                ship.get("phone") or "",
+                f"{ship.get('addr1','')} {ship.get('addr2','')}".strip(),
+                f"{ship.get('zip','')} {ship.get('city','')} ({ship.get('cc','')})".strip(),
             ]
-            order.infortisa_shipping_display = "\n".join([l for l in addr_lines if l]).strip()
+            order.infortisa_shipping_display = "\n".join([l for l in lines if l]).strip()
+
             # 4) Comentarios limpios
             try:
                 order.infortisa_comment_display = order._clean_text_for_xml(order.note)
@@ -266,7 +325,7 @@ class SaleOrder(models.Model):
         txt = " ".join(txt.split())[:max_len]
         return xml_escape(txt)
 
-    # ---------- MÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©todos soporte ISO20022/SEPA (dentro de la clase) ----------
+    # ---------- Métodos soporte ISO20022/SEPA (dentro de la clase) ----------
     def _get_iso20022_method_line(self, bank_journal):
         """Devuelve la payment.method.line del diario de banco para ISO20022 (SEPA Credit Transfer)."""
         self.ensure_one()
@@ -294,7 +353,7 @@ class SaleOrder(models.Model):
         return bank
 
     def _find_bank_journal(self):
-        """Prioriza el configurado; si no, intenta cÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³digo corto BNK5, luego 'Banco', luego el primero tipo bank."""
+        """Prioriza el configurado; si no, intenta código corto BNK5, luego 'Banco', luego el primero tipo bank."""
         ICP = self.env["ir.config_parameter"].sudo()
         j_id = ICP.get_param("infortisa.bank_journal_payment_id")
         if j_id:
@@ -314,7 +373,7 @@ class SaleOrder(models.Model):
         self.ensure_one()
         order = self
 
-        # No permitir si el Code estÃƒÂ¡ en un estado no pagadero (VX/VN/VA/HR)
+        # No permitir si el Code está en un estado no pagadero (VX/VN/VA/HR)
         code = (order.infortisa_op_code or "")
         if any(code.startswith(p) for p in BLOCKED_CODE_PREFIXES):
             order.infortisa_payment_state = "missing"
@@ -335,14 +394,14 @@ class SaleOrder(models.Model):
         bank_journal = order._find_bank_journal()
         if not bank_journal:
             order.infortisa_payment_state = "failed"
-            order.message_post(body=_("No se encontrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ un diario de banco para crear el pago ISO20022."))
+            order.message_post(body=_("No se encontró un diario de banco para crear el pago ISO20022."))
             return False
 
-        # --- MÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©todo ISO20022 / SEPA
+        # --- Método ISO20022 / SEPA
         pm_line = order._get_iso20022_method_line(bank_journal)
         if not pm_line:
             order.infortisa_payment_state = "failed"
-            order.message_post(body=_("No se encontrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³/creÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ el mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©todo 'ISO20022 Credit Transfer' en el diario de banco."))
+            order.message_post(body=_("No se encontró/creó el método 'ISO20022 Credit Transfer' en el diario de banco."))
             return False
 
         # --- Cuenta bancaria del proveedor
@@ -353,7 +412,7 @@ class SaleOrder(models.Model):
             order.message_post(body=_("El proveedor no tiene cuenta bancaria configurada (Contabilidad > Proveedores > Proveedor)."))
             return False
 
-        # --- Crear o reutilizar pago (ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡sin return temprano!)
+        # --- Crear o reutilizar pago (¡sin return temprano!)
         payment = order.infortisa_vendor_payment_id
         if not payment:
             pay_vals = {
@@ -404,21 +463,21 @@ class SaleOrder(models.Model):
 
         # --- Asegurar BATCH (pago por lotes) ---
         try:
-            # 0) Comprobacion dura: estan los modulos?
-            mod = self.env["ir.module.module"].sudo().search([("name","=","account_batch_payment")], limit=1)
+            # 0) Comprobación dura: ¿están los módulos?
+            mod = self.env["ir.module.module"].sudo().search([("name", "=", "account_batch_payment")], limit=1)
             if not (mod and mod.state == "installed"):
-                raise UserError(_("El mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³dulo 'account_batch_payment' no estÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ instalado."))
+                raise UserError(_("El módulo 'account_batch_payment' no está instalado."))
 
-            mod2 = self.env["ir.module.module"].sudo().search([("name","=","account_iso20022")], limit=1)
+            mod2 = self.env["ir.module.module"].sudo().search([("name", "=", "account_iso20022")], limit=1)
             if not (mod2 and mod2.state == "installed"):
-                raise UserError(_("El mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³dulo 'account_iso20022' no estÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ instalado."))
+                raise UserError(_("El módulo 'account_iso20022' no está instalado."))
 
             Batch = self.env["account.batch.payment"].sudo()
 
             # 1) En Odoo 18 el lote usa el payment.method (no la line)
             pm = pm_line.payment_method_id
             if not pm:
-                raise UserError(_("No se encontrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ el payment.method asociado a la lÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­nea de mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©todo."))
+                raise UserError(_("No se encontró el payment.method asociado a la línea de método."))
 
             # 2) Forzar en el pago banderas que algunas bases requieren para exportar
             upd = {}
@@ -428,7 +487,7 @@ class SaleOrder(models.Model):
                 upd["payment_method_id"] = pm.id
             if hasattr(payment, "payment_method_code") and (payment.payment_method_code or "") != (pm.code or ""):
                 upd["payment_method_code"] = pm.code or False
-            # version PAIN (si existe el campo)
+            # versión PAIN (si existe el campo)
             if hasattr(payment, "sepa_pain_version") and not payment.sepa_pain_version:
                 upd["sepa_pain_version"] = "pain.001.001.03"
             if upd:
@@ -437,9 +496,9 @@ class SaleOrder(models.Model):
             # 3) Reutilizar lote compatible o crear uno nuevo
             batch = payment.batch_payment_id
             compatible = bool(batch and
-                            batch.journal_id.id == payment.journal_id.id and
-                            batch.batch_type == payment.payment_type and
-                            (batch.payment_method_id.id == pm.id or batch.payment_method_code == pm.code))
+                              batch.journal_id.id == payment.journal_id.id and
+                              batch.batch_type == payment.payment_type and
+                              (batch.payment_method_id.id == pm.id or batch.payment_method_code == pm.code))
             if not compatible:
                 batch = False
 
@@ -461,20 +520,20 @@ class SaleOrder(models.Model):
                 # limpia falsy
                 batch_vals = {k: v for k, v in batch_vals.items() if v}
                 batch = Batch.create(batch_vals)
-                order.message_post(body=_("Lote de pagos creado: %s (mÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©todo: %s)") % (batch.display_name, pm.code))
+                order.message_post(body=_("Lote de pagos creado: %s (método: %s)") % (batch.display_name, pm.code))
             else:
                 if payment.id not in batch.payment_ids.ids:
                     batch.write({"payment_ids": [(4, payment.id)]})
-                    order.message_post(body=_("Pago aÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±adido al lote existente: %s") % (batch.display_name,))
+                    order.message_post(body=_("Pago añadido al lote existente: %s") % (batch.display_name,))
 
             # --- Generar XML desde el lote (robusto) ---
             try:
                 def _normalize_export(ret, batch, payment):
-                    """Devuelve (xml_bytes, file_name) a partir de mÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºltiples variantes de retorno/campo/adjunto."""
+                    """Devuelve (xml_bytes, file_name) a partir de múltiples variantes de retorno/campo/adjunto."""
                     filename = f"iso20022_{batch.name or batch.id}.xml"
                     candidates = []
 
-                    # A) La acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n devuelve algo utilizable
+                    # A) La acción devuelve algo utilizable
                     if isinstance(ret, dict):
                         # Puede venir {'file': bytes/str} o {'file': {'file': bytes/str, 'filename': 'x.xml'}}
                         f = ret.get("file")
@@ -488,8 +547,8 @@ class SaleOrder(models.Model):
                         if ret.get("filename"):
                             filename = ret["filename"]
 
-                    # B) Campos en el lote segÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºn ediciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n
-                    # - export_file: binario base64 (comÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºn)
+                    # B) Campos en el lote según edición
+                    # - export_file: binario base64 (común)
                     xml_field = getattr(batch, "export_file", False)
                     if xml_field:
                         candidates.append(xml_field)
@@ -503,7 +562,7 @@ class SaleOrder(models.Model):
                     if sepa_xml:
                         candidates.append(sepa_xml)
 
-                    # C) Fallback: adjuntos ya creados por la acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n
+                    # C) Fallback: adjuntos ya creados por la acción
                     Att = self.env["ir.attachment"].sudo()
 
                     # 1) Buscar primero en el LOTE
@@ -537,14 +596,14 @@ class SaleOrder(models.Model):
                             if decoded:
                                 return decoded, (xml_att2.name or filename)
 
-                    # D) ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â¡ltimo recurso: mÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©todo privado que devuelve bytes/base64
+                    # D) Último recurso: método privado que devuelve bytes/base64
                     if hasattr(batch, "_generate_export_file"):
                         try:
                             candidates.append(batch._generate_export_file())
                         except Exception:
                             pass
 
-                    # NormalizaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n de candidatos (bytes/base64/str)
+                    # Normalización de candidatos (bytes/base64/str)
                     import base64 as _b64
                     for c in candidates:
                         if not c:
@@ -558,7 +617,7 @@ class SaleOrder(models.Model):
                                     return decoded, filename
                             except Exception:
                                 pass
-                            # Si no es base64 vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡lido, puede ser XML plano
+                            # Si no es base64 válido, puede ser XML plano
                             if raw.strip().startswith(b'<?xml'):
                                 return raw, filename
                             return raw, filename
@@ -570,18 +629,18 @@ class SaleOrder(models.Model):
                                     return decoded, filename
                             except Exception:
                                 pass
-                            # Texto plano: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºsalo (por si ya viene XML)
+                            # Texto plano: úsalo (por si ya viene XML)
                             return s.encode("utf-8"), filename
 
                     return None, filename
 
-                # Ejecuta la acciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n que corresponda en tu build
+                # Ejecuta la acción que corresponda en tu build
                 ret = None
                 if hasattr(batch, "action_validate_generate_file"):
                     ret = batch.action_validate_generate_file()
                 elif hasattr(batch, "action_validate_generate_xml"):
                     ret = batch.action_validate_generate_xml()
-                # (otras ediciones no devuelven nada y sÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³lo crean un adjunto/campo)
+                # (otras ediciones no devuelven nada y sólo crean un adjunto/campo)
 
                 xml_bytes, export_name = _normalize_export(ret, batch, payment)
 
@@ -610,7 +669,7 @@ class SaleOrder(models.Model):
                     order.infortisa_payment_state = "exported"
                 else:
                     order.infortisa_payment_state = "to_export"
-                    order.message_post(body=_("No se obtuvo contenido para el XML ISO20022 del lote (revisar mÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©todo/export_file/export_file_id/adjuntos)."))
+                    order.message_post(body=_("No se obtuvo contenido para el XML ISO20022 del lote (revisar método/export_file/export_file_id/adjuntos)."))
 
             except Exception as e:
                 order.infortisa_payment_state = "failed"
@@ -618,15 +677,14 @@ class SaleOrder(models.Model):
 
         except Exception as e:
             order.infortisa_payment_state = "failed"
-            order.message_post(body=_("Error al crear el lote o preparar la exportaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n: %s") % e)
+            order.message_post(body=_("Error al crear el lote o preparar la exportación: %s") % e)
             return False
-        
+
         return True
 
-
     def _auto_make_payment_if_ready(self):
-    #    """Llamado por cron: si hay factura y referencia, crea pago + XML ISO20022,
-     #   ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºnicamente cuando Code sea VR/. Con VX/ o VN/ no hace nada."""
+        # """Llamado por cron: si hay factura y referencia, crea pago + XML ISO20022,
+        #   únicamente cuando Code sea VR/. Con VX/ o VN/ no hace nada."""
         for order in self:
             # Gatekeeper
             if not order.infortisa_allowed:
@@ -642,10 +700,10 @@ class SaleOrder(models.Model):
                     if order.infortisa_payment_state != "missing":
                         order.infortisa_payment_state = "missing"
                     # (opcional) Deja el post si quieres traza, o comenta para cero ruido
-                    order.message_post(body=_("Cron: Code=%s indica estado no pagadero; no se crea factura/pago/XML.") % (code or "(vacÃƒÂ­o)"))
+                    order.message_post(body=_("Cron: Code=%s indica estado no pagadero; no se crea factura/pago/XML.") % (code or "(vacío)"))
                     continue
 
-                # 2) Solo avanzar automÃƒÂ¡ticamente cuando sea VR/
+                # 2) Solo avanzar automáticamente cuando sea VR/
                 if not code.startswith("VR/"):
                     continue
 
@@ -653,12 +711,12 @@ class SaleOrder(models.Model):
                 if not order.infortisa_transfer_ref:
                     continue
 
-                # 4) Crear factura automaticamente si esta activado y no existe
+                # 4) Crear factura automáticamente si está activado y no existe
                 auto_bill = order._icp_bool("infortisa.auto_create_bill", False)
                 if auto_bill and not order.infortisa_vendor_bill_id:
                     try:
                         order.action_infortisa_create_bill()
-                        # Propaga la referencia a la factura reciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©n creada
+                        # Propaga la referencia a la factura recién creada
                         bill2 = order.infortisa_vendor_bill_id
                         if bill2 and order.infortisa_transfer_ref:
                             vals = {}
@@ -672,7 +730,7 @@ class SaleOrder(models.Model):
                     except Exception as e:
                         order.message_post(body=_("No se pudo crear la factura automaticamente: %s") % e)
 
-                # 5) Si ya hay factura, y aÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºn no hay pago, crear pago + lote + XML
+                # 5) Si ya hay factura, y aún no hay pago, crear pago + lote + XML
                 if order.infortisa_vendor_bill_id and not order.infortisa_vendor_payment_id:
                     order._create_vendor_payment_and_xml()
 
@@ -683,10 +741,10 @@ class SaleOrder(models.Model):
     # ========== 1) CREAR PEDIDO EN INFORTISA ==========
     def action_infortisa_send(self, block=None, test=None):
         for order in self:
-            # Gatekeeper: si no estÃ¡ permitido por proveedor, saltar
+            # Gatekeeper: si no está permitido por proveedor, saltar
             if not order.infortisa_allowed:
                 continue
-            
+
             if order.infortisa_sent:
                 raise UserError(_("Este pedido ya fue enviado a Infortisa."))
 
@@ -700,14 +758,17 @@ class SaleOrder(models.Model):
 
             _x = lambda s: xml_escape((s or "").strip())
 
-            partner = order.partner_shipping_id or order.partner_id
             delivery_comment = self._clean_text_for_xml(order.note) or "Pedido web"
             delivery_type = "ENV"
 
+            # SIEMPRE: dirección efectiva del checkout
+            ship, use_ceuta_override = order._infortisa_build_shipping_values()
+            if use_ceuta_override:
+                order.message_post(body=_("Dirección CEUTA detectada en el envío efectivo (checkout): se fuerza envío a almacén de San Roque en el XML de Infortisa."))
+
             xml_parts = [
                 '<?xml version="1.0" encoding="utf-16"?>',
-                '<Order xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
-                'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+                '<Order xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
                 f"  <Test>{str(test).lower()}</Test>",
                 f"  <CustomerReference>{_x(order.infortisa_customer_ref)}</CustomerReference>",
                 "  <ShopNumber></ShopNumber>",
@@ -715,14 +776,14 @@ class SaleOrder(models.Model):
                 f"  <BlockOrder>{str(block).lower()}</BlockOrder>",
                 f"  <DeliveryComment>{_x(delivery_comment)}</DeliveryComment>",
                 "  <ShippingAddress>",
-                f"    <Company>{_x((partner.name or 'Cliente')[:50])}</Company>",
-                f"    <Contact>{_x(partner.name)}</Contact>",
-                f"    <PhoneNumber>{_x(partner.phone or partner.mobile or '')}</PhoneNumber>",
-                f"    <Address1>{_x((partner.street or '')[:40])}</Address1>",
-                f"    <Address2>{_x((partner.street2 or '')[:40])}</Address2>",
-                f"    <ZipCode>{_x(partner.zip)}</ZipCode>",
-                f"    <City>{_x(partner.city)}</City>",
-                f"    <CountryTwoLetterCode>{_x((partner.country_id and partner.country_id.code) or 'ES')}</CountryTwoLetterCode>",
+                f"    <Company>{_x((ship.get('company') or 'Cliente')[:50])}</Company>",
+                f"    <Contact>{_x(ship.get('contact'))}</Contact>",
+                f"    <PhoneNumber>{_x(ship.get('phone') or '')}</PhoneNumber>",
+                f"    <Address1>{_x((ship.get('addr1') or '')[:40])}</Address1>",
+                f"    <Address2>{_x((ship.get('addr2') or '')[:40])}</Address2>",
+                f"    <ZipCode>{_x(ship.get('zip') or '')}</ZipCode>",
+                f"    <City>{_x(ship.get('city') or '')}</City>",
+                f"    <CountryTwoLetterCode>{_x(ship.get('cc') or 'ES')}</CountryTwoLetterCode>",
                 "  </ShippingAddress>",
                 "  <Products>",
             ]
@@ -751,7 +812,7 @@ class SaleOrder(models.Model):
                 ]
 
             if not has_any_product:
-                raise UserError(_("No hay lÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­neas vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡lidas para enviar a Infortisa (SKU y cantidad)."))
+                raise UserError(_("No hay líneas válidas para enviar a Infortisa (SKU y cantidad)."))
 
             xml_parts += [
                 "  </Products>",
@@ -777,12 +838,12 @@ class SaleOrder(models.Model):
                 # Algunas respuestas vienen con namespace; otras no. Probamos ambos.
                 root = ET.fromstring(resp.text)
                 NS = {'n': 'http://schemas.datacontract.org/2004/07/BackEnd.Data.Npoco.Models'}
-                # 1) Campo estÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ndar
+                # 1) Campo estándar
                 el = root.find(".//n:InternalReference", NS) or root.find(".//InternalReference")
                 if el is not None and (el.text or "") and not el.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}nil"):
                     internal_ref = (el.text or "").strip()
 
-                # 2) Fallback: a veces llega sÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³lo en el DeliveryComment como "... Pedido API EXT123456 ..."
+                # 2) Fallback: puede venir sólo en el DeliveryComment como "... Pedido API EXT123456 ..."
                 if not internal_ref:
                     dc = root.find(".//n:DeliveryComment", NS) or root.find(".//DeliveryComment")
                     if dc is not None and dc.text:
@@ -791,13 +852,13 @@ class SaleOrder(models.Model):
                             internal_ref = m.group(0)
 
             except Exception:
-                # ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ltimo recurso: substring naÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯f si el XML trae el tag literal
+                # Último recurso: substring naïf si el XML trae el tag literal
                 if "<InternalReference>" in resp.text:
                     internal_ref = resp.text.split("<InternalReference>")[1].split("</InternalReference>")[0].strip()
 
-            # Si la API reporta errores, paramos aquÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­
+            # Si la API reporta errores, paramos aquí
             if "<HasErrors>true</HasErrors>" in resp.text:
-                raise UserError(_("Infortisa devolviÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ errores: %s") % resp.text)
+                raise UserError(_("Infortisa devolvió errores: %s") % resp.text)
 
             # Mensaje y escritura inmediata de estado
             order.message_post(
@@ -805,7 +866,7 @@ class SaleOrder(models.Model):
                     % (test, block, resp.text[:500])
             )
             order.write({
-                "infortisa_internal_ref": internal_ref or "",     # <- ya no queda vacÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­o si venÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­a en DeliveryComment
+                "infortisa_internal_ref": internal_ref or "",     # <- ya no queda vacío si venía en DeliveryComment
                 "infortisa_state": "Importing" if not test else "Test OK",
                 "infortisa_sent": True,
             })
@@ -819,7 +880,7 @@ class SaleOrder(models.Model):
             # Gatekeeper
             if not order.infortisa_allowed:
                 continue
-            
+
             if not order.infortisa_customer_ref:
                 raise UserError(_("No hay CustomerReference en este pedido."))
 
@@ -884,7 +945,7 @@ class SaleOrder(models.Model):
                             order.infortisa_sent = True
                             changed_bits.append(_("Marcado como enviado a Infortisa."))
 
-                    # --- Code (VR/VX/VN) ---
+                    # --- Code (VR/VX/VN)
                     code_el = op.find("n:Code", ns)
                     code = (code_el.text.strip() if (code_el is not None and code_el.text) else "") or ""
                     if code and code != (order.infortisa_op_code or ""):
@@ -1050,7 +1111,7 @@ class SaleOrder(models.Model):
                     prods_html.append("</tfoot></table>")
                     order.infortisa_products_html = "\n".join(prods_html)
 
-                    # --- AHORA (despuÃƒÂ©s de importes): auto-factura y pago/lote si procede, segÃƒÂºn Code
+                    # --- AHORA (después de importes): auto-factura y pago/lote si procede, según Code
                     try:
                         ICP = order.env["ir.config_parameter"].sudo()
                         auto_bill = ICP.get_param("infortisa.auto_create_bill") in ("True", "true", "1")
@@ -1059,14 +1120,14 @@ class SaleOrder(models.Model):
                         code_prefix_block = code.startswith(BLOCKED_CODE_PREFIXES)
 
                         if code_prefix_block:
-                            # No generamos nada si estÃƒÂ¡ en estado no pagadero (VX/VN/VA/HR)
-                            msg = _("No se genera factura/pago/XML: Code=%s indica estado no pagadero.") % (code or "(vacÃƒÂ­o)")
+                            # No generamos nada si está en estado no pagadero (VX/VN/VA/HR)
+                            msg = _("No se genera factura/pago/XML: Code=%s indica estado no pagadero.") % (code or "(vacío)")
                             order.message_post(body=msg)
                             if order.infortisa_payment_state != "missing":
                                 order.infortisa_payment_state = "missing"
 
                         elif code_prefix_ok:
-                            # Solo en VR/ permitimos creaciÃƒÂ³n
+                            # Solo en VR/ permitimos creación
                             if transfer_ref and auto_bill and not order.infortisa_vendor_bill_id:
                                 order.action_infortisa_create_bill()
                                 bill2 = order.infortisa_vendor_bill_id
@@ -1078,19 +1139,18 @@ class SaleOrder(models.Model):
                                         vals["ref"] = transfer_ref
                                     if vals:
                                         bill2.write(vals)
-                                        bill2.message_post(body=_("Factura creada automÃƒÂ¡ticamente y referenciada: %s") % transfer_ref)
+                                        bill2.message_post(body=_("Factura creada automáticamente y referenciada: %s") % transfer_ref)
 
                             if transfer_ref and order.infortisa_vendor_bill_id and not order.infortisa_vendor_payment_id:
                                 order._create_vendor_payment_and_xml()
 
                         else:
-                            # Code vacÃƒÂ­o o aÃƒÂºn no devuelto: solo avisamos en ejecuciÃƒÂ³n manual (no cron)
+                            # Code vacío o aún no devuelto: solo avisamos en ejecución manual (no cron)
                             if not from_cron and not code:
-                                order.message_post(body=_("Code no disponible aÃƒÂºn; se pospone la generaciÃƒÂ³n de factura/pago/XML."))
+                                order.message_post(body=_("Code no disponible aún; se pospone la generación de factura/pago/XML."))
 
                     except Exception as e:
                         order.message_post(body=_("Error al procesar pago/lote tras recibir referencia: %s") % e)
-
 
                 elif "State of Order:" in resp.text:
                     state = resp.text.split("State of Order:")[1].split("<")[0].strip()
@@ -1106,7 +1166,7 @@ class SaleOrder(models.Model):
 
             order.write({"infortisa_state": state or ""})
 
-            # MensajerÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­a: manual = detallado; cron = solo si hay cambios
+            # Mensajería: manual = detallado; cron = solo si hay cambios
             if from_cron:
                 if changed_bits:
                     order.message_post(body="<br/>".join(changed_bits))
@@ -1135,7 +1195,7 @@ class SaleOrder(models.Model):
             if resp.status_code != 200:
                 raise UserError(_("Error bloquear/anular (HTTP %s): %s") % (resp.status_code, resp.text))
             order.message_post(
-                body=_("AcciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n Infortisa ejecutada. Cancel=%s Block=%s<br/>Resp: %s")
+                body=_("Acción Infortisa ejecutada. Cancel=%s Block=%s<br/>Resp: %s")
                 % (cancel, block, (resp.text or "")[:500])
             )
             order.action_infortisa_status()
@@ -1164,21 +1224,21 @@ class SaleOrder(models.Model):
                 # Auto: factura (si activado) + pago + XML
                 order._auto_make_payment_if_ready()
             except Exception as e:
-                _logger.exception("Poll estado Infortisa fallÃ³ para SO %s: %s", order.name, e)
+                _logger.exception("Poll estado Infortisa falló para SO %s: %s", order.name, e)
                 order.message_post(body=_("Cron Infortisa: error al actualizar o procesar: %s") % e)
 
-    # ========== 5) AUTO-ENVÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢O cuando estÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ pagado ==========
+    # ========== 5) AUTO-ENVÍO cuando está pagado ==========
     def action_confirm(self):
         res = super().action_confirm()
         for order in self:
             try:
-                # Gatekeeper: sÃ³lo si el pedido estÃ¡ permitido por proveedor
+                # Gatekeeper: sólo si el pedido está permitido por proveedor
                 if order.infortisa_allowed and not order.infortisa_sent:
                     order.action_infortisa_send(block=None, test=None)
             except Exception as e:
-                order.message_post(body=_("Fallo al enviar a Infortisa automÃ¡ticamente: %s") % e)
+                order.message_post(body=_("Fallo al enviar a Infortisa automáticamente: %s") % e)
         return res
-    
+
     # ========== 6) CREAR FACTURA DE PROVEEDOR DESDE IMPORTES API ==========
     def action_infortisa_create_bill(self):
         self.ensure_one()
@@ -1203,7 +1263,7 @@ class SaleOrder(models.Model):
         if not journal or not journal.exists():
             journal = self.env["account.journal"].search([("type", "=", "purchase")], limit=1)
         if not journal:
-            raise UserError(_("No se ha encontrado un diario de compras. ConfigÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âºralo en Ajustes > Infortisa."))
+            raise UserError(_("No se ha encontrado un diario de compras. Configúralo en Ajustes > Infortisa."))
 
         lines = []
 
@@ -1239,7 +1299,7 @@ class SaleOrder(models.Model):
         })
         vals_ref = {}
         if self.infortisa_transfer_ref:
-            vals_ref["payment_reference"] = self.infortisa_transfer_ref  # ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œReferencia de facturaÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬
+            vals_ref["payment_reference"] = self.infortisa_transfer_ref  # Referencia de factura
             vals_ref["ref"] = self.infortisa_transfer_ref                # Referencia interna
         if vals_ref:
             bill.write(vals_ref)
@@ -1249,9 +1309,7 @@ class SaleOrder(models.Model):
         action = self.env.ref("account.action_move_in_invoice_type").read()[0]
         action["views"] = [(self.env.ref("account.view_move_form").id, "form")]
         action["res_id"] = bill.id
-        return action  
- 
-
+        return action
 
  
  
