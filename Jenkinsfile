@@ -8,7 +8,7 @@ pipeline {
     ADDON_DIR     = "/opt/odoo/custom/addons/${env.MODULE_NAME}"
     SERVICE_NAME  = 'odoo'
     DB_NAME       = 'odoo_nexus'
-    ERR_PATTERNS  = "ERROR|Traceback|CRITICAL|psycopg2|odoo.exceptions|xmlrpc.client.Fault|IntegrityError"
+    ERR_PATTERNS  = "ERROR|CRITICAL|Traceback|odoo.exceptions|psycopg2|OperationalError|xmlrpc.client.Fault|IntegrityError"
 
     STAGE_HOST    = '10.0.100.160'
     STAGE_USER    = 'deploy'
@@ -95,10 +95,10 @@ LOCAL_EOF
   final String addonDir    = env.ADDON_DIR
   final String addonParent = addonDir.contains('/') ? addonDir.substring(0, addonDir.lastIndexOf('/')) : '.'
 
-  // 1) Commit previo (para rollback)
+  // 1) Commit previo EXACTO (para rollback)
   def prevCommit = sshRunOut("""
 if [ -d "${addonDir}/.git" ]; then
-  sudo -u odoo git -C "${addonDir}" rev-parse HEAD~1 2>/dev/null || true
+  sudo -u odoo git -C "${addonDir}" rev-parse HEAD 2>/dev/null || true
 fi
 """)
   echo "Prev commit en ${host}: ${prevCommit ?: '(no disponible, primer deploy)'}"
@@ -120,17 +120,28 @@ sudo -u odoo git -C "${addonDir}" reset --hard origin/main
 sudo -u odoo git -C "${addonDir}" rev-parse HEAD
 """)
 
-    // 3) Upgrade de módulo
+    // 3) Upgrade de módulo (one-shot)
     sshRun("""sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init""")
 
-    // 4) Restart servicio
+    // 4) Reinicio servicio
     sshRun("""
 sudo -n systemctl restart ${env.SERVICE_NAME}
 sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}
 """)
 
-    // 5) Health check
-    sshRun("""curl -fsS http://localhost:8069/web/login >/dev/null""")
+    // 5) Health check con reintentos (hasta 120s)
+    sshRun("""
+set +e
+for i in \$(seq 1 60); do
+  if curl -fsS http://127.0.0.1:8069/web/login >/dev/null; then
+    echo "Health-check OK"
+    exit 0
+  fi
+  sleep 2
+done
+echo "Health-check FAILED: Odoo no responde en 120s" >&2
+exit 1
+""")
 
     // 6) Logs + detección de errores
     sh(
@@ -156,7 +167,16 @@ LOCAL_EOF
         sshRun("""sudo -n -u odoo ${env.ODOO_BIN} -c ${env.ODOO_CONF} -d ${env.DB_NAME} -u ${env.MODULE_NAME} --stop-after-init""")
         sshRun("""sudo -n systemctl restart ${env.SERVICE_NAME}""")
         sshRun("""sudo -n systemctl is-active --quiet ${env.SERVICE_NAME}""")
-        sshRun("""curl -fsS http://localhost:8069/web/login >/dev/null""")
+        sshRun("""
+set +e
+for i in \$(seq 1 60); do
+  if curl -fsS http://127.0.0.1:8069/web/login >/dev/null; then
+    exit 0
+  fi
+  sleep 2
+done
+exit 1
+""")
       } catch (err2) {
         echo "⚠️ ${host}: Rollback aplicado pero verificación falló. Revisa logs."
       }
@@ -167,7 +187,7 @@ LOCAL_EOF
     // Logs tras el error
     sh(
       script: """bash -euo pipefail <<'LOCAL_EOF'
-echo "==== LOGS tras el error en ${host} (últimas 800 líneas) ===="
+echo "==== LOGS tras el error en ${host} (últimas 250 líneas) ===="
 ssh -o StrictHostKeyChecking=no ${user}@${host} 'sudo -n journalctl -u ${env.SERVICE_NAME} -n 250 --no-pager || true'
 LOCAL_EOF
 """
