@@ -1,7 +1,7 @@
 {
     "name": "Infortisa Orders",
     "summary": "Envío de pedidos a Infortisa, tracking de estado y factura proveedor por API",
-    "version": "18.0.4.0",
+    "version": "18.0.5.0",
     "author": "Nexus Antonio",
     "website": "",
     "category": "Sales",
