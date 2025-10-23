@@ -246,11 +246,11 @@ class SaleOrder(models.Model):
 
         if use_ceuta:
             ship = {
-                "company": "LOGISTICA Y TRANSPORTES DE CEUTA SL",
+                "company": "SÁNCHEZ PEINADO S.L",
                 "contact": "Federico Conejero",
                 "phone":   "600589947",
-                "addr1":   "CL ARRABAL PARCELA 10",
-                "addr2":   "",
+                "addr1":   "CL ARRABAL PARCELA 10, Pol. Guadarranque",
+                "addr2":   "NAVE TDN-LOGITRANS",
                 "zip":     "11360",
                 "city":    "SAN ROQUE",
                 "cc":      "ES",
