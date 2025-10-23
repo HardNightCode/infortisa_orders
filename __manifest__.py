@@ -8,7 +8,7 @@
     "license": "LGPL-3",
     "installable": True,
     "application": False,
-    "depends": [
+    "depends":dqw [
         "sale_management",
         "account",
         "website_sale",
