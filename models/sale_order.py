@@ -142,6 +142,12 @@ class SaleOrder(models.Model):
         copy=False,
     )
 
+    # --- Tracking (nuevo)
+    infortisa_tracking_url = fields.Char("Tracking URL (Infortisa)", copy=False, readonly=True)
+    infortisa_tracking_number = fields.Char("Tracking Number (Infortisa)", copy=False, readonly=True)
+    infortisa_tracking_status = fields.Char("Tracking Status (Infortisa)", copy=False, readonly=True)
+    infortisa_tracking_status_detail = fields.Char("Tracking Detail (Infortisa)", copy=False, readonly=True)
+
     # --- Gatekeeper: sólo usar Infortisa si hay al menos 1 línea con el proveedor configurado
     infortisa_allowed = fields.Boolean(
         string="Usar flujo Infortisa",
@@ -866,7 +872,7 @@ class SaleOrder(models.Model):
                     % (test, block, resp.text[:500])
             )
             order.write({
-                "infortisa_internal_ref": internal_ref or "",     # <- ya no queda vacío si venía en DeliveryComment
+                "infortisa_internal_ref": internal_ref or "",
                 "infortisa_state": "Importing" if not test else "Test OK",
                 "infortisa_sent": True,
             })
@@ -897,6 +903,10 @@ class SaleOrder(models.Model):
                 "canon": order.infortisa_amount_canon_op,
                 "other": order.infortisa_amount_other_op,
                 "ref": order.infortisa_transfer_ref,
+                "tracking_url": order.infortisa_tracking_url,
+                "tracking_number": order.infortisa_tracking_number,
+                "tracking_status": order.infortisa_tracking_status,
+                "tracking_detail": order.infortisa_tracking_status_detail,
             }
             order.write({"infortisa_last_response": resp.text})
 
@@ -945,7 +955,7 @@ class SaleOrder(models.Model):
                             order.infortisa_sent = True
                             changed_bits.append(_("Marcado como enviado a Infortisa."))
 
-                    # --- Code (VR/VX/VN)
+                    # --- Code (VR/VX/VN/...)
                     code_el = op.find("n:Code", ns)
                     code = (code_el.text.strip() if (code_el is not None and code_el.text) else "") or ""
                     if code and code != (order.infortisa_op_code or ""):
@@ -979,6 +989,56 @@ class SaleOrder(models.Model):
                             if to_write:
                                 bill.write(to_write)
                                 bill.message_post(body=_("Referencia establecida desde Infortisa: %s") % transfer_ref)
+
+                    # --- Tracking (URL, número y estado) ---
+                    trk_url_el = op.find("n:TrackingUrl", ns)
+                    trk_num_el = op.find("n:TrackingNumber", ns)
+                    trk_status_el = op.find("n:TrackingStatus", ns)
+                    trk_status_dt_el = op.find("n:TrackingStatusDateTime", ns)
+                    trk_status_det_el = op.find("n:TrackingStatusDetail", ns)
+
+                    trk_url = (trk_url_el.text or "").strip() if trk_url_el is not None and trk_url_el.text else ""
+                    trk_num = (trk_num_el.text or "").strip() if trk_num_el is not None and trk_num_el.text else ""
+                    trk_status = (trk_status_el.text or "").strip() if trk_status_el is not None and trk_status_el.text else ""
+                    trk_status_dt = (trk_status_dt_el.text or "").strip() if trk_status_dt_el is not None and trk_status_dt_el.text else ""
+                    trk_status_det = (trk_status_det_el.text or "").strip() if trk_status_det_el is not None and trk_status_det_el.text else ""
+
+                    # Si hay URL y es nueva/cambia -> guardar y avisar por chatter al instante
+                    if trk_url and trk_url != (previous["tracking_url"] or ""):
+                        order.write({
+                            "infortisa_tracking_url": trk_url,
+                            "infortisa_tracking_number": trk_num or order.infortisa_tracking_number,
+                            "infortisa_tracking_status": trk_status or order.infortisa_tracking_status,
+                            "infortisa_tracking_status_detail": trk_status_det or order.infortisa_tracking_status_detail,
+                        })
+                        order.message_post(
+                            body=_("¡Tu pedido ha salido de almacén! 🧾<br/>"
+                                   "Transportista: <b>%s</b><br/>"
+                                   "Estado: <b>%s</b>%s<br/>"
+                                   "%s<br/>"
+                                   "Puedes seguir tu envío aquí: <a href='%s' target='_blank'>Seguimiento</a>")
+                            % (
+                                (op.find("n:ShippingAgent", ns).text if op.find("n:ShippingAgent", ns) is not None and op.find("n:ShippingAgent", ns).text else _("(desconocido)")),
+                                trk_status or _("(sin estado)"),
+                                (" — " + trk_status_dt) if trk_status_dt else "",
+                                (_("Nº de seguimiento: <b>%s</b>") % trk_num) if trk_num else "",
+                                trk_url,
+                            )
+                        )
+                        changed_bits.append(_("Tracking URL detectada y enviada al chatter."))
+
+                    else:
+                        # Aunque no cambie la URL, podemos actualizar estado/número si han cambiado
+                        upd = {}
+                        if trk_num and trk_num != (previous["tracking_number"] or ""):
+                            upd["infortisa_tracking_number"] = trk_num
+                        if trk_status and trk_status != (previous["tracking_status"] or ""):
+                            upd["infortisa_tracking_status"] = trk_status
+                        if trk_status_det and trk_status_det != (previous["tracking_detail"] or ""):
+                            upd["infortisa_tracking_status_detail"] = trk_status_det
+                        if upd:
+                            order.write(upd)
+                            changed_bits.append(_("Información de tracking actualizada."))
 
                     # --- Productos -> Base propia
                     rows = []
