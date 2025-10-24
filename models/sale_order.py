@@ -1370,3 +1370,4 @@ class SaleOrder(models.Model):
         action["views"] = [(self.env.ref("account.view_move_form").id, "form")]
         action["res_id"] = bill.id
         return action
+
